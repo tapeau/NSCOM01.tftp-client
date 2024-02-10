@@ -9,10 +9,9 @@ Credits / References:
 """
 # Import necessary libraries
 import socket # for socket functionalities
-from struct import pack # for packing bytes into a formatted packet (as per the indications of RFC 1350)
 
 # Declare constants
-BLKSIZE = 512 # Default is 512. TODO: Feature to alow users change the value of BLKSIZE
+BLKSIZE = 512 # Default is 512
 MAX_DATA_LENGTH = BLKSIZE + 4 # BLKSIZE + Opcode + Block Number
 MODE = b'octet' # Only support 'octet' transfer mode since the project only deals with binary files
 
@@ -27,11 +26,46 @@ OPCODE = { # Dictionary to store TFTP Opcodes
 # Create the UDP socket to be used by the client
 CLIENT_SOCKET = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
+# Variables to store TFTP server credentials (Empty at start)
+SERVER_ADDR = None
+
+# TODO: Main function
 def main():
-    # TODO: Main function
     pass
 
-# TODO: Add functions for each TFTP functionality
+# TODO: Add functions for each TFTP opcode functionality
+# send_rrq()
+# send_wrq()
+# send_dat()
+# send_ack()
+# send_err()
+
+def send_rrq(filename):
+    # RRQ packet will be represented as a byte array
+    rrq = bytearray() 
+
+    # Append RRQ opcode at the beginning of the packet
+    rrq.extend(0, OPCODE['RRQ'])
+
+    # Convert the passed file name into a byte array and append it to the RRQ packet
+    rrq += bytearray(filename.encode('utf-8'))
+
+    # Append 0x00 byte between file name and transfer mode
+    rrq.append(0)
+    
+    # Append transfer mode to RRQ packet
+    rrq += bytearray(bytes(MODE, 'utf-8'))
+
+    # Append 0x00 terminal byte
+    rrq.append(0)
+
+    # Send the packet to server through client socket
+    CLIENT_SOCKET.sendto(rrq, SERVER_ADDR)
+
+    # Notify client
+    print(f"File \"{filename}\" requested to server {SERVER_ADDR}")
+
+# TODO: Add functions for bonus features (BLKSIZE setting & TSIZE sending)
 
 if __name__ == '__main__':
     main()
