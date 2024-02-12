@@ -14,7 +14,7 @@ from art import * # for design purposes
 
 # Declare constants
 BLK_SIZE = 512 # Default is 512
-MAX_DATA_LENGTH = BLKSIZE + 4 # BLKSIZE + Opcode + Block Number
+MAX_DATA_LENGTH = BLK_SIZE + 4 # BLKSIZE + Opcode + Block Number
 MODE = b'octet' # Only support 'octet' transfer mode since the project only deals with binary files
 
 OPCODE = { # Dictionary to store TFTP Opcodes
