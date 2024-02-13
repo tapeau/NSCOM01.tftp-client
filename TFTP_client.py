@@ -45,18 +45,18 @@ ERR_CODE = { # Dictionary to store TFTP error codes
 # Create the UDP socket to be used by the client
 CLIENT_SOCKET = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-# Variables to store TFTP server credentials (Empty at start)
+# Tuple variable to store TFTP server credentials (Empty at start)
 SERVER_ADDR = None
 
 def main():
     '''
     Function that contains the application's main functionalities.
     
-    Parameters:
-    None
+    Args:
+        None
     
     Returns:
-    None
+        None
     '''
     # Welcome screen
     clear_console()
@@ -65,15 +65,16 @@ def main():
     # Loop to prompt user to connect to a TFTP server with a valid IP address and port number
     print('Please connect to a TFTP server to start.')
     while True:
-        SERVER_ADDR = input('Enter server address: ')
-        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$', SERVER_ADDR):
+        input_address = input('Enter server address: ')
+        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$', input_address):
+            SERVER_ADDR = parse_address(input_address)
             print('Server address set.')
             print()
             break
         else:
             print('ERROR: Please enter a valid IP address with a port number.')
             print()
-            SERVER_ADDR = None
+            input_address = None
             continue
     
     # TODO: Add functions for bonus features (BLK_SIZE setting & TSIZE sending)
@@ -97,6 +98,14 @@ def main():
         
         # Evaluate user choice
         if user_choice == 1:
+            # Prompt user for the name of the file they wish to download
+            server_file = input('Enter the name of the file you wish to download from the server: ')
+            print('Requesting file from server...')
+            
+            # Send RRQ packet to server
+            send_req(OPCODE['RRQ'], server_file)
+            
+            # Read server response
             # TODO
             pass
         elif user_choice == 2:
@@ -117,12 +126,12 @@ def send_req(type, filename):
     '''
     Function to send TFTP request packet (RRQ or WRQ).
 
-    Parameters:
-    type (int): Type of request - 1 for RRQ, 2 for WRQ (according to their opcodes)
-    filename (str): Name of file to be included in the request
+    Args:
+        type (int): Type of request - 1 for RRQ, 2 for WRQ (according to their opcodes)
+        filename (str): Name of file to be included in the request
 
     Returns:
-    None
+        None
     '''
     # Represent request packet as a bytearray
     req = bytearray() 
@@ -149,12 +158,12 @@ def send_dat(block, data):
     '''
     Function to send TFTP data packet.
 
-    Parameters:
-    block (int): Block number of data packet
-    data (bytearray): Bytearray containing data to be sent
+    Args:
+        block (int): Block number of data packet
+        data (bytearray): Bytearray containing data to be sent
 
     Returns:
-    None
+        None
     '''
     # Represent data packet as a bytearray
     dat = bytearray()
@@ -175,11 +184,11 @@ def send_ack(block):
     '''
     Function to send TFTP acknowledge packet/signal.
     
-    Parameters:
-    block (int): Block number of data packet
+    Args:
+        block (int): Block number of data packet
     
     Returns:
-    None
+        None
     '''
     # Represent acknowledge packet as a bytearray
     ack = bytearray()
@@ -197,11 +206,11 @@ def send_err(code):
     '''
     Function to send TFTP error packet/signal.
     
-    Parameters:
-    code (int): Error code to send
+    Args:
+        code (int): Error code to send
     
     Returns:
-    None
+        None
     '''
     # Represent error packet as a bytearray
     err = bytearray()
@@ -224,10 +233,10 @@ def clear_console():
     Taken from: https://www.geeksforgeeks.org/clear-screen-python/
     
     Paremeters:
-    None
+        None
     
     Returns:
-    None
+        None
     '''
     # For Windows
     if name == 'nt':
@@ -241,11 +250,11 @@ def print_header():
     '''
     Function to print application header (for design purposes).
     
-    Parameters:
-    None
+    Args:
+        None
     
     Returns:
-    None
+        None
     '''
     print()
     print(text2art('EASY', space=4))
@@ -256,6 +265,28 @@ def print_header():
     print('As Machine Project #1 for DLSU NSCOM01 course (T2 2023-2024)')
     print('--------------------------------------------------------')
     print()
+
+def parse_address(address):
+    '''
+    Function to convert an IP address and port string into a tuple of (string, int)
+    where the 'string' is the address and the 'int' is the port number.
+    
+    Args:
+        address (str): String containing an IP address and port
+    
+    Returns:
+        tuple: A tuple containing the IP address (string) and port number (integer)
+    '''
+    # Split the address string by colon ':'
+    parts = address.split(':')
+    
+    # Extract IP address (first part)
+    ip_address = parts[0]
+    
+    # Extract port number and convert it to an integer (second part)
+    port = int(parts[1])
+    
+    return ip_address, port
 
 if __name__ == '__main__':
     main()
