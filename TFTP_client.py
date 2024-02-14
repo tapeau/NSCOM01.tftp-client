@@ -20,7 +20,7 @@ from art import * # for design purposes
 
 # Declare constants
 BLK_SIZE = 512 # Default is 512
-MAX_DATA_LENGTH = BLK_SIZE + 4 # BLK_SIZE + opcode + Block Number
+MAX_DATA_LENGTH = 516 # BLK_SIZE + opcode + Block Number
 MODE = b'octet' # Only support 'octet' transfer mode since the project only deals with binary files
 
 OPCODE = { # Dictionary to store TFTP opcodes
@@ -105,9 +105,54 @@ def main():
             # Send RRQ packet to server
             send_req(OPCODE['RRQ'], server_file)
             
-            # Read server response
-            # TODO
-            pass
+            # Loop to receive incoming packets from server
+            received_data = b''
+            block_number_current = 1
+            download_loop = True
+            while download_loop:
+                # Read server response
+                received_packet, received_packet_opcode = receive_tftp_packet()
+                
+                # Check first if the server response is an ERROR packet
+                if received_packet_opcode == OPCODE['ERR']:
+                    # Process the packet and terminate loop
+                    print(f'ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}')
+                    download_loop = False
+                else:
+                    # Process packet into a variable, then into a file
+                    # Get first the packet's block number
+                    block_number_server = received_packet[2:4]
+                    
+                    # Compare with client's current block number
+                    if int.from_bytes(block_number_server, byteorder='big') != block_number_current:
+                        # If packet is not expected, ignore
+                        print(f'Ignoring packet with unexpected block number: {block_number_server}')
+                        continue
+                    
+                    # Write packet data payload onto a variable and append current block number
+                    received_data += received_packet[4:]  # Append data to received data
+                    block_number_current += 1
+                    
+                    # Send acknowledgment
+                    send_ack(block_number_server)
+                    
+                    # Check if the last packet is received
+                    if len(received_packet) < MAX_DATA_LENGTH:
+                        # If so, terminate the loop
+                        download_loop = False
+            
+            # Check if there has been any received data
+            if received_data:
+                # Write the received data onto a file
+                with open(server_file, 'wb') as f:
+                    f.write(received_data)
+                
+                # Notify user
+                print(f'File \'{server_file}\' has been successfully downloaded from the server.')
+            
+            # Pause program execution to let user read the results (UI enhancement)
+            prompt_key()
+            
         elif user_choice == 2:
             # TODO
             pass
@@ -227,6 +272,30 @@ def send_err(code):
     # Send the error packet to the server through client socket
     CLIENT_SOCKET.sendto(err, SERVER_ADDR)
 
+def receive_tftp_packet():
+    '''
+    Function that bundles and adds security to socket.recvsocket() function.
+    
+    Args:
+        None
+    
+    Returns:
+        bytes: The packet received from the TFTP server
+        int: The opcode of the packet received from the TFTP server
+    '''
+    while True:
+        # Receive some packet
+        data, addr = CLIENT_SOCKET.recvfrom(MAX_DATA_LENGTH)
+        
+        # Check if packet is from the TFTP server
+        if addr == SERVER_ADDR:
+            # If it is, extract opcode from the data then return both the opcode and the actual data
+            opcode = data[:2]
+            return data, int.from_bytes(opcode, byteorder='big')
+        else:
+            # If not, ignore
+            print(f"Ignoring packet from unexpected address: {addr}")
+
 def clear_console():
     '''
     Function to clear CLI (for design purposes).
@@ -287,6 +356,22 @@ def parse_address(address):
     port = int(parts[1])
     
     return ip_address, port
+
+def prompt_key():
+    '''
+    Function that prompts the user to press any key
+    before resuming program flow.
+    
+    Args:
+        None
+    
+    Returns:
+        None
+    '''
+    # Just three simple functions
+    print()
+    print('Press any key to continue...', end='')
+    input()
 
 if __name__ == '__main__':
     main()
