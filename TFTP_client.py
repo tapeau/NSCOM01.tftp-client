@@ -15,7 +15,8 @@ Additional Credits / References:
 # Import necessary libraries
 import socket # for socket functionalities
 import re # for IP address validation through regex
-from os import system, name # for design purposes
+import os # for file checking and design purposes
+import sys # for handling Ctrl+C terminations
 from art import * # for design purposes
 
 # Declare constants
@@ -58,161 +59,182 @@ def main():
     Returns:
         None
     '''
-    # Welcome screen
-    clear_console()
-    print_header()
-
-    # Loop to prompt user to connect to a TFTP server with a valid IP address and port number
-    print('Please connect to a TFTP server to start.')
-    while True:
-        input_address = input('Enter server address: ')
-        if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$', input_address):
-            SERVER_ADDR = parse_address(input_address)
-            print('Server address set.')
-            print()
-            break
-        else:
-            print('ERROR: Please enter a valid IP address with a port number.')
-            print()
-            input_address = None
-            continue
-    
-    # TODO: Add functions for bonus features (BLK_SIZE setting & TSIZE sending)
-    
-    # Main program loop
-    while True:
-        # Reset UI
+    # Whole main program is enclosed in a try statement to handle Ctrl+C terminations
+    try:
+        # Welcome screen
         clear_console()
         print_header()
+
+        # Loop to prompt user to connect to a TFTP server with a valid IP address and port number
+        print('Please connect to a TFTP server to start.')
+        while True:
+            input_address = input('Enter server address: ')
+            if re.match(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+$', input_address):
+                SERVER_ADDR = parse_address(input_address)
+                print('Server address set.')
+                print()
+                break
+            else:
+                print('ERROR: Please enter a valid IP address with a port number.')
+                print()
+                input_address = None
+                continue
         
-        # Print menu
-        print('\'1\'\tDownload a file from the server')
-        print('\'2\'\tUpload a file to the server')
-        print('\'3\'\tExit')
-        print()
+        # TODO: Add functions for bonus features (BLK_SIZE setting & TSIZE sending)
         
-        # Prompt for user choice
-        user_choice = input('Enter the number of your desired action: ')
-        print()
-        
-        # Evaluate user choice
-        if user_choice == 1:
-            # Initialize variables
-            received_data = b''
-            client_block_number = 1
+        # Main program loop
+        while True:
+            # Reset UI
+            clear_console()
+            print_header()
             
-            # Prompt user for the name of the file they wish to download
-            server_file = input('Enter the name of the file you wish to download from the server: ')
-            print('Requesting file from server...')
+            # Print menu
+            print('\'1\'\tDownload a file from the server')
+            print('\'2\'\tUpload a file to the server')
+            print('\'3\'\tExit')
+            print()
             
-            # Send RRQ packet to server
-            send_req(OPCODE['RRQ'], server_file)
+            # Prompt for user choice
+            user_choice = input('Enter the number of your desired action: ')
+            print()
             
-            # Loop to receive incoming packets from server and send corresponding ACK packets
-            while True:
-                # Read server response
-                received_packet, received_packet_opcode = receive_tftp_packet()
+            # Evaluate user choice
+            if user_choice == 1:
+                # Initialize variables
+                received_data = b''
+                client_block_number = 1
                 
-                # Check first if the server response is an ERROR packet
-                if received_packet_opcode == OPCODE['ERR']:
-                    # Process the packet and terminate loop
-                    print(f'ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}')
-                    break
-                else:
-                    # Process packet into a variable, then into a file
-                    # Get first the packet's block number
-                    server_block_number = received_packet[2:4]
+                # Prompt user for the name of the file they wish to download
+                server_file = input('Enter the name of the file you wish to download from the server: ')
+                print('Requesting file from server...')
+                
+                # Send RRQ packet to server
+                send_req(OPCODE['RRQ'], server_file)
+                
+                # Loop to receive incoming packets from server and send corresponding ACK packets
+                while True:
+                    # Read server response
+                    received_packet, received_packet_opcode = receive_tftp_packet()
                     
-                    # Compare with client's current block number
-                    if int.from_bytes(server_block_number, byteorder='big') != client_block_number:
-                        # If packet is not expected, ignore
-                        print(f'Ignoring packet with unexpected block number: {server_block_number}')
-                        continue
-                    
-                    # Write packet data payload onto a variable and append current block number
-                    received_data += received_packet[4:]
-                    client_block_number += 1
-                    
-                    # Send acknowledgment
-                    send_ack(server_block_number)
-                    
-                    # Check if the last packet is received
-                    if len(received_packet) < MAX_DATA_LENGTH:
-                        # If so, terminate the loop
+                    # Check first if the server response is an ERROR packet
+                    if received_packet_opcode == OPCODE['ERR']:
+                        # Process the packet and terminate loop
+                        print(f'ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}')
                         break
-            
-            # Check if there has been any received data
-            if received_data:
-                # Write the received data onto a file
-                with open(server_file, 'wb') as f:
-                    f.write(received_data)
+                    else:
+                        # Process packet into a variable, then into a file
+                        # Get first the packet's block number
+                        server_block_number = received_packet[2:4]
+                        
+                        # Compare with client's current block number
+                        if int.from_bytes(server_block_number, byteorder='big') != client_block_number:
+                            # If packet is not expected, ignore
+                            print(f'Ignoring packet with unexpected block number: {server_block_number}')
+                            continue
+                        
+                        # Write packet data payload onto a variable and append current block number
+                        received_data += received_packet[4:]
+                        client_block_number += 1
+                        
+                        # Send acknowledgment
+                        send_ack(server_block_number)
+                        
+                        # Check if the last packet is received
+                        if len(received_packet) < MAX_DATA_LENGTH:
+                            # If so, terminate the loop
+                            break
                 
-                # Notify user
-                print(f'File \'{server_file}\' has been successfully downloaded from the server.')
+                # Check if there has been any received data
+                if received_data:
+                    # Write the received data onto a file
+                    with open(server_file, 'wb') as f:
+                        f.write(received_data)
+                    
+                    # Notify user
+                    print(f'File \'{server_file}\' has been successfully downloaded from the server.')
+                
+            elif user_choice == 2:
+                # Initialize variables
+                client_file_name = b''
+                client_block_number = 0
+                
+                # Prompt user for the name of the file they wish to upload
+                # Encased in a while loop to ensure file existence
+                while True:
+                    # Get user input
+                    client_file_name = input('Enter the name of the file you wish to upload to the server: ')
+                    
+                    # Check if user entered a file name
+                    if client_file_name:
+                        # Check if the file with the specified name exists
+                        if os.path.isfile(client_file_name):
+                            break
+                        else:
+                            print('ERROR: File not found in local directory.')
+                    else:
+                        # Notify the user if they did not enter any file name
+                        print('ERROR: No file name entered.')
+                
+                # Send WRQ packet to server
+                print('Uploading file to server...')
+                send_req(OPCODE['WRQ'], client_file_name)
+                
+                # Loop to upload packets to server and receive corresponding ACK packets
+                while True:
+                    # Read server response
+                    received_packet, received_packet_opcode = receive_tftp_packet()
+                    
+                    # Check first if the server response is an ERROR packet
+                    if received_packet_opcode == OPCODE['ERR']:
+                        # Process the packet and terminate loop
+                        print(f'ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}')
+                        break
+                    else:
+                        # Increment client block number
+                        client_block_number += 1
+                        
+                        # Open file
+                        with open(client_file_name, "rb") as client_file:
+                            # Read next BLK_SIZE amount of data from the file
+                            client_data = client_file.read(BLK_SIZE)
+                            
+                            # Turn into a TFTP DATA packet and send to server
+                            send_dat(client_block_number, client_data)
+                            
+                            # Check if the sent data is less than BLK_SIZE
+                            if len(client_data) < BLK_SIZE:
+                                break
+                
+                # Notify user once finished
+                print(f'File \'{client_file_name}\' has been successfully uploaded to the server.')
+
+            elif user_choice == 3:
+                # Prompt for user confirmation
+                user_confirm = input('Are you sure you want to exit the application? (Y/N): ')
+                if user_confirm == 'Y' or user_confirm == 'y':
+                    break
+            
+            else:
+                print('ERROR: Unrecognized input.')
             
             # Pause program execution to let user read the results (UI enhancement)
             prompt_key()
-            
-        elif user_choice == 2:
-            # Initialize variables
-            client_file = b''
-            client_block_number = 0
-            
-            # Prompt user for the name of the file they wish to upload
-            # Encased in a while loop to ensure file existence
-            while True:
-                # Get user input
-                client_file = input('Enter the name of the file you wish to upload to the server: ')
-                
-                # Check if user entered a file name and if that file exists
-                if client_file:
-                    try:
-                        # Process the file
-                        with open(client_file, "rb") as file:
-                            bytes_data = file.read()
-
-                        # Terminate the loop if successful
-                        break
-                    except FileNotFoundError:
-                        # Notify the user if the file they entered doesn't exist in their local directory
-                        print('ERROR: File not found in local directory.')
-                else:
-                    # Notify the user if they did not enter any file name
-                    print('ERROR: No file name entered.')
-            
-            # Send WRQ packet to server
-            print('Requesting file from server...')
-            send_req(OPCODE['WRQ'], client_file)
-            
-            # Loop to upload packets to server and receive corresponding ACK packets
-            while True:
-                # Read server response
-                received_packet, received_packet_opcode = receive_tftp_packet()
-                
-                # Check first if the server response is an ERROR packet
-                if received_packet_opcode == OPCODE['ERR']:
-                    # Process the packet and terminate loop
-                    print(f'ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}')
-                    break
-                else:
-                    # Upload file through a set of packets of BLK_SIZE size, then terminate once packet size < BLK_SIZE
-                    # TODO
-                    pass
-
-        elif user_choice == 3:
-            # Prompt for user confirmation
-            user_confirm = input('Are you sure you want to exit the application? (Y/N): ')
-            if user_confirm == 'Y' or user_confirm == 'y':
-                break
         
-        else:
-            print('ERROR: Unrecognized input.')
-    
-    # TODO: Handle socket closing when user does Ctrl+C
-    
-    # Notify user
-    print('Program terminated.')
+        # Close client socket
+        CLIENT_SOCKET.close()
         
+        # Notify user
+        print('Program terminated.')
+    
+    except KeyboardInterrupt:
+        # Close client socket
+        CLIENT_SOCKET.close()
+        
+        # Notify user
+        print('Program terminated.')
+        
+        # Terminate Python script (which will keep running if Ctrl+C is performed, even if program is no longer running)
+        sys.exit()
 
 def send_req(type, filename):
     '''
@@ -355,12 +377,12 @@ def clear_console():
         None
     '''
     # For Windows
-    if name == 'nt':
-        _ = system('cls')
- 
+    if os.name == 'nt':
+        _ = os.system('cls')
+
     # For Mac and Linux (here, os.name is 'posix')
     else:
-        _ = system('clear')
+        _ = os.system('clear')
 
 def print_header():
     '''
