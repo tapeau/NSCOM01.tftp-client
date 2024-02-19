@@ -19,20 +19,22 @@ import socket # for socket functionalities
 import re # for IP address validation through regex
 import os # for file checking and design purposes
 import sys # for handling Ctrl+C terminations
-from art import * # for design purposes
+import art # for design purposes
 
 # Declare constants
-BLK_SIZE = 512 # Default is 512
-MAX_DATA_LENGTH = 516 # BLK_SIZE + opcode + Block Number
-MODE = b'octet' # Only support 'octet' transfer mode since the project only deals with binary files
+BLK_SIZE_DEFAULT = 512 # Default is 512
+BLK_SIZE = BLK_SIZE_DEFAULT # Set to default at first
+MAX_DATA_LENGTH = BLK_SIZE + 4 # BLK_SIZE + opcode + Block Number
 MAX_VALUE_2_BYTES = 2 ** 16  # 65536 - to be used to limit 2-byte block numbers
+MODE = b'octet' # Only support 'octet' transfer mode since the project only deals with binary files
 
 OPCODE = { # Dictionary to store TFTP opcodes
     'RRQ': 1,
     'WRQ': 2,
     'DAT': 3,
     'ACK': 4,
-    'ERR': 5
+    'ERR': 5,
+    'OAC': 6
 }
 
 ERR_CODE = { # Dictionary to store TFTP error codes
@@ -43,11 +45,13 @@ ERR_CODE = { # Dictionary to store TFTP error codes
     4: 'Illegal TFTP operation.',
     5: 'Unknown transfer ID.',
     6: 'File already exists.',
-    7: 'No such user.'
+    7: 'No such user.',
+    8: 'Failed option negotiation.'
 }
 
-# Create the UDP socket to be used by the client
+# Create the UDP socket to be used by the client, and set socket timeout to 6 seconds
 CLIENT_SOCKET = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+CLIENT_SOCKET.settimeout(6)
 
 # Tuple variable to store TFTP server credentials (empty at start)
 SERVER_ADDR = None
@@ -76,9 +80,12 @@ def main():
                 prompt_server()
                 continue
             
-            # Print menu
+            # Print dashboard
             print(f'Current server: {SERVER_ADDR[0]}:{SERVER_ADDR[1]}')
+            print(f'Current transfer block size: {BLK_SIZE} bytes')
             print()
+            
+            # Print menu
             print('\'1\'\tDownload a file from the server')
             print('\'2\'\tUpload a file to the server')
             print('\'3\'\tChange transfer block size')
@@ -97,6 +104,8 @@ def main():
                 server_file_name = None
                 client_block_number = 1
                 original_address = SERVER_ADDR
+                original_blksize = BLK_SIZE
+                negotiated_blksize = True
                 
                 # Prompt user for the name of the file they wish to download
                 # Encased in a while loop to ensure file existence
@@ -119,11 +128,38 @@ def main():
                 # Send RRQ packet to server
                 send_req(OPCODE['RRQ'], server_file_name)
                 
+                # Read first server response
+                received_packet, received_packet_opcode = receive_tftp_packet()
+                
+                # Additional negotiation if user set a custom transfer block size
+                if BLK_SIZE != 512:
+                    # Check opcode of received response
+                    if received_packet_opcode == OPCODE['OAC']:
+                        # Check if server accepted the options requested by the client
+                        negotiated_blksize = check_oac_blksize(received_packet)
+                    elif received_packet_opcode == OPCODE['DAT']:
+                        # DAT means server did not accept options
+                        negotiated_blksize = False
+                
+                # Check status of the client-server negotiations with the client's requested TFTP options
+                if negotiated_blksize:
+                    # Send acknowledgement of OACK to server
+                    send_ack(0)
+                    
+                    # Read next server response
+                    received_packet, received_packet_opcode = receive_tftp_packet()
+                else:
+                    # Notify user about failed Client-Server negotiations
+                    print()
+                    print('NOTICE: Client-Server negotiation for custom transfer block size has failed.')
+                    print('Using default transfer block size (512 bytes) for this file transfer.')
+                    print()
+                    
+                    # Use default BLK_SIZE value
+                    change_blksize(BLK_SIZE_DEFAULT)
+                
                 # Loop to receive incoming packets from server and send corresponding ACK packets
                 while True:
-                    # Read server response
-                    received_packet, received_packet_opcode = receive_tftp_packet()
-                    
                     # Check first if the server response is an ERROR packet
                     if received_packet_opcode == OPCODE['ERR']:
                         # Process the packet and terminate loop
@@ -133,8 +169,6 @@ def main():
                         # Process packet into a variable, then into a file
                         # Get first the packet's block number
                         server_block_number = int.from_bytes(received_packet[2:4], byteorder='big')
-                        print(f'SERVER: {server_block_number}')
-                        print(f'CLIENT: {client_block_number}')
                         
                         # Compare with client's current block number
                         if server_block_number != client_block_number:
@@ -162,6 +196,12 @@ def main():
                             
                             # Terminate the loop
                             break
+                    
+                    # Read next server response
+                    received_packet, received_packet_opcode = receive_tftp_packet()
+                
+                # Set BLK_SIZE back to its original value
+                change_blksize(original_blksize)
                 
                 # Set SERVER_ADDR back to its original address
                 change_server(original_address[0], original_address[1])
@@ -171,6 +211,8 @@ def main():
                 client_file_name = b''
                 client_block_number = 0
                 original_address = SERVER_ADDR
+                original_blksize = BLK_SIZE
+                negotiated_blksize = True
                 
                 # Prompt user for the name of the file they wish to upload
                 # Encased in a while loop to ensure file existence
@@ -193,6 +235,30 @@ def main():
                 print('Uploading file to server...')
                 send_req(OPCODE['WRQ'], client_file_name)
                 
+                # Read first server response
+                received_packet, received_packet_opcode = receive_tftp_packet()
+                
+                # Additional negotiation if user set a custom transfer block size
+                if BLK_SIZE != 512:
+                    # Check opcode of received response
+                    if received_packet_opcode == OPCODE['OAC']:
+                        # Check if server accepted the options requested by the client
+                        negotiated_blksize = check_oac_blksize(received_packet)
+                    elif received_packet_opcode == OPCODE['ACK']:
+                        # ACK means server did not accept options
+                        negotiated_blksize = False
+                
+                # Check status of the client-server negotiations with the client's requested TFTP options
+                if negotiated_blksize == False:
+                    # Notify user about failed Client-Server negotiations
+                    print()
+                    print('NOTICE: Client-Server negotiation for custom transfer block size has failed.')
+                    print('Using default transfer block size (512 bytes) for this file transfer.')
+                    print()
+                    
+                    # Use default BLK_SIZE value
+                    change_blksize(BLK_SIZE_DEFAULT)
+                
                 # Open file
                 with open(client_file_name, 'rb') as client_file:
                     # Read the whole file at once
@@ -200,9 +266,6 @@ def main():
                     
                     # Loop to iteratively slice and process the next BLK_SIZE amount of data in the file
                     for i in range(0, len(client_data), BLK_SIZE):
-                        # Read server response
-                        received_packet, received_packet_opcode = receive_tftp_packet()
-                        
                         # Check first if the server response is an ERROR packet
                         if received_packet_opcode == OPCODE['ERR']:
                             # Process the packet and terminate loop
@@ -217,6 +280,9 @@ def main():
                                 
                             # Turn the slice into a TFTP DATA packet and send to server
                             send_dat(client_block_number % MAX_VALUE_2_BYTES, client_data_block)
+                            
+                            # Read next server response
+                            received_packet, received_packet_opcode = receive_tftp_packet()
                                 
                     # Check if the file's length is divisible by BLK_SIZE
                     if len(client_data) % BLK_SIZE == 0:
@@ -226,12 +292,14 @@ def main():
                 # Notify user once finished
                 print(f'File \'{client_file_name}\' has been successfully uploaded to the server.')
                 
+                # Set BLK_SIZE back to its original value
+                change_blksize(original_blksize)
+                
                 # Set SERVER_ADDR back to its original address
                 change_server(original_address[0], original_address[1])
                 
             elif user_choice == '3':
-                # TODO: Functionality to change BLK_SIZE
-                pass
+                prompt_blksize()
             
             elif user_choice == '4':
                 prompt_server()
@@ -297,6 +365,20 @@ def send_req(type, filename):
 
     # Append 0x00 byte
     req += b'\x00'
+    
+    # Append custom transfer block size value if the user set a custom value
+    if BLK_SIZE != 512:
+        # Append custom blocksize option indicator
+        req += b'blksize'
+        
+        # Append 0x00 byte
+        req += b'\x00'
+        
+        # Append blocksize value
+        req += f'{BLK_SIZE}'.encode().decode('unicode_escape').encode("raw_unicode_escape")
+        
+        # Append 0x00 byte
+        req += b'\x00'
 
     # Send the request packet to the server through client socket
     CLIENT_SOCKET.sendto(bytes(req), SERVER_ADDR)
@@ -324,9 +406,8 @@ def send_dat(block, data):
     
     # Append the data
     dat += data
-    
+
     # Send the data packet to the server through client socket
-    print(f'SENT: {bytes(dat[:3])}')
     CLIENT_SOCKET.sendto(bytes(dat), SERVER_ADDR)
 
 def send_ack(block):
@@ -370,7 +451,7 @@ def send_err(code):
     err += f"\\x0{OPCODE['ERR']}".encode().decode('unicode_escape').encode("raw_unicode_escape")
     
     # Convert error message into a byte array and append it to the error packet
-    err += bytearray(ERR_CODE[code].encode('utf-8'))
+    err += bytearray(code.encode('utf-8'))
     
     # Append 0x00 terminating byte
     err += b'\x00'
@@ -395,7 +476,7 @@ def receive_tftp_packet():
         
         # Check if packet is from the TFTP server
         if addr[0] == SERVER_ADDR[0]:
-            # if it is, first set the source address of the received packet into SERVER_ADDR
+            # If it is, first refresh SERVER_ADDR by setting it into the source address of the received packet
             # This is because the OS may change the port number from the one entered by the user
             change_server(SERVER_ADDR[0], addr[1])
             
@@ -405,6 +486,196 @@ def receive_tftp_packet():
         else:
             # If not, ignore
             print(f"Ignoring packet from unexpected address: {addr}")
+
+def check_oac_blksize(packet):
+    '''
+    Function to check if custom transfer block size is
+    acknowledged by the server in their OACK response
+    
+    Args:
+        oac_packet (bytes): OACK packet from the server
+    
+    Returns:
+        bool: Boolean value whether the server accepted the options or not
+    '''
+    # Initialize variables
+    oack_blksize = f'blksize\\x00{BLK_SIZE}\\x00'.encode().decode('unicode_escape').encode("raw_unicode_escape")
+    
+    # Check for the presence of blocksize acknowledgement within the packet
+    if oack_blksize in packet:
+        return True
+    else:
+        return False
+
+def change_server(address, port):
+    '''
+    Function to change the global variable SERVER_ADDR
+    which stores the server address currently used by the client
+    
+    Args:
+        address (str): Address of the server
+        port (int): Port number of the server
+    
+    Returns:
+        None
+    '''
+    # Create reference to the global variable
+    global SERVER_ADDR
+    
+    # Change the values
+    SERVER_ADDR = (address, port)
+    
+def change_blksize(size):
+    '''
+    Function to change the global variable BLK_SIZE
+    which stores the transfer block size to be used by the client
+    
+    Args:
+        size (int): New value to be set to BLK_SIZE
+        
+    Returns:
+        None
+    '''
+    # Create reference to the global variables
+    global BLK_SIZE
+    global MAX_DATA_LENGTH
+    
+    # Change the value of BLK_SIZE
+    BLK_SIZE = size
+    
+    # Since BLK_SIZE is changing, MAX_DATA_LENGTH must also too
+    MAX_DATA_LENGTH = BLK_SIZE + 4
+
+def prompt_server():
+    '''
+    Function to print a prompt requesting the user to enter a server address with a port number
+    
+    Args:
+        None
+    
+    Returns:
+        None
+    '''
+    # Initialize variables
+    input_address = None
+    input_port = None
+    
+    # Loop to prompt user for a valid IP address
+    while True:
+        print()
+        print('(Default address is \'127.0.0.1\' - enter blank to use the default)')
+        input_address = input('Enter server address: ')
+        
+        # Evaluate user input
+        if re.match(r'(^localhost)|(^(\d{1,3}\.){3}\d{1,3})', input_address):
+            # Change to '127.0.0.1' if 'localhost' is entered, else keep current value
+            input_address = '127.0.0.1' if input_address == 'localhost' else input_address
+            print(f'Server address set to {input_address}.')
+            break
+        elif not input_address:
+            # Set to default address '127.0.0.1'
+            input_address = '127.0.0.1'
+            print(f'Server address set to default ({input_address}).')
+            break
+        else:
+            print('ERROR: Please enter a valid IP address.')
+            print('FORMAT: xxx.xxx.xxx.xxx')
+            input_address = None
+            continue
+    
+    # Loop to prompt user for a valid port number
+    while True:
+        print()
+        print('(Default port number is \'69\' - enter blank to use the default)')
+        input_port = input('Enter server port number: ')
+        
+        # Evaluate user input
+        if not input_port:
+            input_port = 69
+            print(f'Server port number set to default ({input_port}).')
+            break
+        elif input_port.isdigit() == False:
+            print('ERROR: Please enter a valid port number.')
+            print('FORMAT: Any integer value')
+            input_port = None
+            continue
+        else:
+            print(f'Server port number set to {input_port}.')
+            input_port = int(input_port)
+            break
+    
+    # Store server credentials
+    change_server(input_address, input_port)
+    
+    # Notify the user
+    print()
+    print(f'Server successfully set to: {SERVER_ADDR[0]}:{SERVER_ADDR[1]}')
+    prompt_key()
+
+def prompt_blksize():
+    '''
+    Function to change the global variable BLK_SIZE
+    which stores the transfer block size to be negotiated by the client
+    
+    Args:
+        None
+    
+    Returns:
+        None
+    '''
+    # Initialize variables
+    input_blksize = None
+    
+    # Loop to prompt user for custom blocksize value
+    print(f'(Default transfer block size is \'{BLK_SIZE_DEFAULT}\' bytes - enter blank to use the default)')
+    while True:
+        try:
+            # Get user input
+            input_value = input('Enter custom transfer block size: ')
+            
+            # Check if the user entered nothing (i.e. they chose to use the default value)
+            if not input_value:
+                input_blksize = BLK_SIZE_DEFAULT
+                break
+            
+            # int() function checks if entered value is an integer
+            input_blksize = int(input_value)
+            
+            # Another check to see if the entered value is between 8 - 65464 (as per RFC 2348)
+            if input_blksize < 8 or input_blksize > 65464:
+                raise ValueError
+            
+            # Terminate loop if no issues arise
+            break
+        except ValueError:
+            print()
+            print('ERROR: Please enter a valid transfer block size value.')
+            print('FORMAT: Any positive integer from 8 to 65464.')
+            print()
+            input_blksize = None
+    
+    # Set the custom blocksize value to BLK_SIZE
+    change_blksize(input_blksize)
+    
+    # Notify the user
+    print()
+    print(f'Transfer block size successfully set to: {BLK_SIZE}')
+
+def prompt_key():
+    '''
+    Function that prompts the user to press any key
+    before resuming program flow.
+    
+    Args:
+        None
+    
+    Returns:
+        None
+    '''
+    # Just three simple functions
+    print()
+    print('Press any key to continue...', end='')
+    input()
 
 def clear_console():
     '''
@@ -436,99 +707,14 @@ def print_header():
         None
     '''
     print()
-    print(text2art('EASY', font='modular'))
-    print(text2art('TFTP', font='modular'))
+    print(art.text2art('EASY', font='modular'))
+    print(art.text2art('TFTP', font='modular'))
     print('------------------------------------------------------------------')
     print('A simple command-line TFTP client application')
     print('Developed by J.L. Tapia and Raico Madrinan')
     print('As Machine Project #1 for DLSU NSCOM01 course (T2 2023-2024)')
     print('------------------------------------------------------------------')
     print()
-
-def prompt_server():
-    '''
-    Function to print a prompt requesting the user to enter a server address with a port number
-    
-    Args:
-        None
-    
-    Returns:
-        None
-    '''
-    # Loop to prompt user to connect to a TFTP server with a valid IP address and port number
-    while True:
-        input_address = input('Enter server address: ')
-        if re.match(r'(^localhost:\d+$)|(^(\d{1,3}\.){3}\d{1,3}:\d+$)', input_address):
-            address = parse_address(input_address)
-            change_server(address[0], address[1])
-            print('Server address set.')
-            print()
-            break
-        else:
-            print('ERROR: Please enter a valid IP address with a port number.')
-            print()
-            input_address = None
-            continue
-
-def parse_address(address):
-    '''
-    Function to convert an IP address and port string into a tuple of (string, int)
-    where the 'string' is the address and the 'int' is the port number.
-    
-    Args:
-        address (str): String containing an IP address and port
-    
-    Returns:
-        tuple: A tuple containing the IP address (string) and port number (integer)
-    '''
-    # Split the address string by colon ':'
-    parts = address.split(':')
-    
-    # Extract IP address (first part)
-    # Additional check to convert 'localhost' to 127.0.0.1
-    if parts[0] == 'localhost':
-        ip_address = '127.0.0.1'
-    else:
-        ip_address = parts[0]
-    
-    # Extract port number and convert it to an integer (second part)
-    port = int(parts[1])
-    
-    return (ip_address, port)
-
-def change_server(address, port):
-    '''
-    Function to change the global variable SERVER_ADDR
-    which stores the server address currently used by the client
-    
-    Args:
-        address (str): Address of the server
-        port (int): Port number of the server
-    
-    Returns:
-        None
-    '''
-    # Create reference to the global variable
-    global SERVER_ADDR
-    
-    # Change the values
-    SERVER_ADDR = (address, port)
-
-def prompt_key():
-    '''
-    Function that prompts the user to press any key
-    before resuming program flow.
-    
-    Args:
-        None
-    
-    Returns:
-        None
-    '''
-    # Just three simple functions
-    print()
-    print('Press any key to continue...', end='')
-    input()
 
 if __name__ == '__main__':
     main()
