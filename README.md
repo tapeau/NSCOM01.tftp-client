@@ -5,4 +5,16 @@ A simple command-line TFTP client application developed as Machine Project #1 fo
 - John Lorenzo Tapia
 - Raico Luis Madrinan
 
-***WORK-IN-PROGRESS***
+## Running the client
+1. Install required packages
+```
+pip install -r requirements.txt
+```
+
+2. Build and run the client
+```
+python EASY_TFTP.py
+```
+
+## Additional credits
+All additional credits and references can be found at the top of the source file.
