@@ -9,23 +9,27 @@ GitHub Repository:
 https://github.com/tapeau/NSCOM01.tftp-client
 
 Additional Credits / References:
-- https://www.ascii-art.site/
+- https://github.com/sepandhaghighi/art
+- https://github.com/verigak/progress/
 - https://www.geeksforgeeks.org/clear-screen-python/
+- https://www.geeksforgeeks.org/how-to-get-file-size-in-python/
+- https://www.autoitscript.com/forum/topic/152150-tftp-Client-Server/
 - https://stackoverflow.com/questions/38763771/how-do-i-remove-double-back-slash-from-a-bytes-object
-- https://www.autoitscript.com/forum/topic/152150-tftp-client-server/
 '''
-# Import necessary libraries
+# Import libraries
 import socket # for socket functionalities
 import re # for IP address validation through regex
-import os # for file checking and design purposes
+import os # for file analysis and design purposes
 import sys # for handling Ctrl+C terminations
 import art # for design purposes
+import progress # for design purposes
 
 # Declare constants
-BLK_SIZE_DEFAULT = 512 # Default is 512
-BLK_SIZE = BLK_SIZE_DEFAULT # Set to default at first
-MAX_DATA_LENGTH = BLK_SIZE + 4 # BLK_SIZE + opcode + Block Number
+BLK_SIZE_DEFAULT = 512 # Variable for default transfer block size as per RFC 1350
+BLK_SIZE = BLK_SIZE_DEFAULT # Variable for transfer block size used by the client
+MAX_DATA_LENGTH = 4 + BLK_SIZE # Variable for max length of DATA packets given the transfer block size (opcode + Block Number + BLK_SIZE)
 MAX_VALUE_2_BYTES = 2 ** 16  # 65536 - to be used to limit 2-byte block numbers
+TSIZE_OPTION = False # Option to communicate transfer size (default is False)
 MODE = b'octet' # Only support 'octet' transfer mode since the project only deals with binary files
 
 OPCODE = { # Dictionary to store TFTP opcodes
@@ -81,16 +85,19 @@ def main():
                 continue
             
             # Print dashboard
+            tsize_indicator = 'ON' if TSIZE_OPTION else 'OFF'
             print(f'Current server: {SERVER_ADDR[0]}:{SERVER_ADDR[1]}')
             print(f'Current transfer block size: {BLK_SIZE} bytes')
+            print(f'Current transfer size option: {tsize_indicator}')
             print()
             
             # Print menu
             print('\'1\'\tDownload a file from the server')
             print('\'2\'\tUpload a file to the server')
-            print('\'3\'\tChange transfer block size')
-            print('\'4\'\tChange current server')
-            print('\'5\'\tExit')
+            print('\'3\'\tChange current server')
+            print('\'4\'\tChange transfer block size')
+            print('\'5\'\tToggle transfer size option')
+            print('\'6\'\tExit')
             print()
             
             # Prompt for user choice
@@ -106,9 +113,11 @@ def main():
                 original_address = SERVER_ADDR
                 original_blksize = BLK_SIZE
                 negotiated_blksize = True
+                received_tsize = None
                 
                 # Prompt user for the name of the file they wish to download
                 # Encased in a while loop to ensure file existence
+                print('(Enter \'/\' to go back.)')
                 while True:
                     # Get user input
                     server_file_name = input('Enter the name of the file you wish to download from the server: ')
@@ -119,11 +128,16 @@ def main():
                         if os.path.isfile(server_file_name):
                             print('ERROR: File already exists in local directory.')
                         else:
-                            print('Requesting file from server...')
                             break
                     else:
                         # Notify the user if they did not enter any file name
                         print('ERROR: No file name entered.')
+                
+                # Check if user entered '/'
+                if server_file_name == '/':
+                    continue
+                else:
+                    print('Requesting file from server.')
                 
                 # Send RRQ packet to server
                 send_req(OPCODE['RRQ'], server_file_name)
@@ -131,32 +145,71 @@ def main():
                 # Read first server response
                 received_packet, received_packet_opcode = receive_tftp_packet()
                 
-                # Additional negotiation if user set a custom transfer block size
-                if BLK_SIZE != 512:
+                # Additional negotiation if the user has set a custom transfer block size or turned transfer size option on
+                if BLK_SIZE != 512 or TSIZE_OPTION:
                     # Check opcode of received response
                     if received_packet_opcode == OPCODE['OAC']:
                         # Check if server accepted the options requested by the client
-                        negotiated_blksize = check_oac_blksize(received_packet)
+                        negotiated_blksize, received_tsize = process_oac_from_rrq(received_packet)
                     elif received_packet_opcode == OPCODE['DAT']:
-                        # DAT means server did not accept options
+                        # DAT means server did not accept all options
                         negotiated_blksize = False
+                print()
                 
-                # Check status of the client-server negotiations with the client's requested TFTP options
-                if negotiated_blksize:
+                # Check status of Client-Server negotiations regarding custom transfer block size
+                if BLK_SIZE != 512 and negotiated_blksize:
+                    # Check status of Client-Server negotiations for transfer size option
+                    if TSIZE_OPTION and not received_tsize:
+                        # Notify user if failed
+                        print('NOTICE: Client-Server negotiation for transfer size option has failed.')
+                        print(f'Downloading file \'{server_file_name}\' with an unknown size from the server.')
+                        print()
+                    else:
+                        print(f'Downloading file \'{server_file_name}\' with a size of {received_tsize} bytes from the server.')
+                    
+                    # Send acknowledgement of OACK to server
+                    send_ack(0)
+                    
+                    # Read next server response
+                    received_packet, received_packet_opcode = receive_tftp_packet()
+                # Check status of Client-Server negotiations regarding transfer size option
+                elif TSIZE_OPTION and received_tsize:
+                    # Check status of Client-Server negotiations for custom transfer block size
+                    if BLK_SIZE != 512 and not negotiated_blksize:
+                        # Notify user if failed
+                        print('NOTICE: Client-Server negotiation for custom transfer block size has failed.')
+                        print('Using default transfer block size (512 bytes) for this file transfer.')
+                        print()
+                        
+                        # Use default BLK_SIZE value
+                        change_blksize(BLK_SIZE_DEFAULT)
+                    
+                    # Notify user of the size of the requested file
+                    print(f'Downloading file \'{server_file_name}\' with a size of {received_tsize} bytes from the server.')
+                    
                     # Send acknowledgement of OACK to server
                     send_ack(0)
                     
                     # Read next server response
                     received_packet, received_packet_opcode = receive_tftp_packet()
                 else:
-                    # Notify user about failed Client-Server negotiations
-                    print()
-                    print('NOTICE: Client-Server negotiation for custom transfer block size has failed.')
-                    print('Using default transfer block size (512 bytes) for this file transfer.')
-                    print()
+                    # Notify user about failed Client-Server negotiations for custom transfer block size
+                    if BLK_SIZE != 512:
+                        # Notify user if failed
+                        print('NOTICE: Client-Server negotiation for custom transfer block size has failed.')
+                        print('Using default transfer block size (512 bytes) for this file transfer.')
+                        print()
+                        
+                        # Use default BLK_SIZE value
+                        change_blksize(BLK_SIZE_DEFAULT)
                     
-                    # Use default BLK_SIZE value
-                    change_blksize(BLK_SIZE_DEFAULT)
+                    # Notify user about failed Client-Server negotiations for transfer size option
+                    if TSIZE_OPTION:
+                        # Notify user if failed
+                        print('NOTICE: Client-Server negotiation for transfer size option has failed.')
+                    
+                    # Notify user
+                    print(f'Downloading file \'{server_file_name}\' with an unknown size from the server.')
                 
                 # Loop to receive incoming packets from server and send corresponding ACK packets
                 while True:
@@ -191,7 +244,8 @@ def main():
                                 with open(server_file_name, 'wb') as f:
                                     f.write(server_file)
                                 
-                                # Notify user
+                                # Notify user once finished
+                                print()
                                 print(f'File \'{server_file_name}\' has been successfully downloaded from the server.')
                             
                             # Terminate the loop
@@ -208,14 +262,16 @@ def main():
                 
             elif user_choice == '2':
                 # Initialize variables
-                client_file_name = b''
+                client_file_name = None
                 client_block_number = 0
                 original_address = SERVER_ADDR
                 original_blksize = BLK_SIZE
                 negotiated_blksize = True
+                negotiated_tsize = True
                 
                 # Prompt user for the name of the file they wish to upload
                 # Encased in a while loop to ensure file existence
+                print('(Enter \'/\' to go back.)')
                 while True:
                     # Get user input
                     client_file_name = input('Enter the name of the file you wish to upload to the server: ')
@@ -223,35 +279,44 @@ def main():
                     # Check if user entered a file name
                     if client_file_name:
                         # Check if the file with the specified name exists
-                        if os.path.isfile(client_file_name):
+                        if os.path.isfile(client_file_name) or client_file_name == '/':
                             break
                         else:
                             print('ERROR: File not found in local directory.')
+                            client_file_name = None
                     else:
                         # Notify the user if they did not enter any file name
                         print('ERROR: No file name entered.')
                 
+                # Check if user entered '/'
+                if client_file_name == '/':
+                    continue
+                else:
+                    print('Requesting file upload to server.')
+                
                 # Send WRQ packet to server
-                print('Uploading file to server...')
                 send_req(OPCODE['WRQ'], client_file_name)
                 
                 # Read first server response
                 received_packet, received_packet_opcode = receive_tftp_packet()
                 
                 # Additional negotiation if user set a custom transfer block size
-                if BLK_SIZE != 512:
+                if BLK_SIZE != 512 or TSIZE_OPTION:
                     # Check opcode of received response
                     if received_packet_opcode == OPCODE['OAC']:
                         # Check if server accepted the options requested by the client
-                        negotiated_blksize = check_oac_blksize(received_packet)
+                        negotiated_blksize, negotiated_tsize = process_oac_from_wrq(received_packet, client_file_name)
                     elif received_packet_opcode == OPCODE['ACK']:
-                        # ACK means server did not accept options
+                        # ACK means server did not accept option for custom transfer block size
                         negotiated_blksize = False
+                    elif received_packet_opcode == OPCODE['ERR']:
+                        # ERR means file is too big for the server to handle (i.e. server did not accept transfer size option)
+                        negotiated_tsize = False
+                print()
                 
-                # Check status of the client-server negotiations with the client's requested TFTP options
-                if negotiated_blksize == False:
+                # Check status of Client-Server negotiations regarding custom transfer block size
+                if BLK_SIZE != 512 and not negotiated_blksize:
                     # Notify user about failed Client-Server negotiations
-                    print()
                     print('NOTICE: Client-Server negotiation for custom transfer block size has failed.')
                     print('Using default transfer block size (512 bytes) for this file transfer.')
                     print()
@@ -259,38 +324,49 @@ def main():
                     # Use default BLK_SIZE value
                     change_blksize(BLK_SIZE_DEFAULT)
                 
-                # Open file
-                with open(client_file_name, 'rb') as client_file:
-                    # Read the whole file at once
-                    client_data = client_file.read()
+                # Check status of Client-Server negotiations regarding transfer size option
+                if not negotiated_tsize:
+                    # Notify user about failed Client-Server negotiations for transfer size option
+                    print('ERROR: Client-Server negotiation for transfer size option has failed.')
+                    print(f'File is too big for the server to handle. Aborting upload.')
+                    print()
+                else:
+                    # Notify user
+                    print(f'Uploading file \'{client_file_name}\' with a size of {os.path.getsize(client_file_name)} bytes to the server.')
                     
-                    # Loop to iteratively slice and process the next BLK_SIZE amount of data in the file
-                    for i in range(0, len(client_data), BLK_SIZE):
-                        # Check first if the server response is an ERROR packet
-                        if received_packet_opcode == OPCODE['ERR']:
-                            # Process the packet and terminate loop
-                            print(f"ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}")
-                            break
-                        else:
-                            # Increment client block number
-                            client_block_number += 1
-                            
-                            # Get current slice of data
-                            client_data_block = client_data[i : i + BLK_SIZE]
+                    # Open file
+                    with open(client_file_name, 'rb') as client_file:
+                        # Read the whole file at once
+                        client_data = client_file.read()
+                        
+                        # Loop to iteratively slice and process the next BLK_SIZE amount of data in the file
+                        for i in range(0, len(client_data), BLK_SIZE):
+                            # Check first if the server response is an ERROR packet
+                            if received_packet_opcode == OPCODE['ERR']:
+                                # Process the packet and terminate loop
+                                print(f"ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}")
+                                break
+                            else:
+                                # Increment client block number
+                                client_block_number += 1
                                 
-                            # Turn the slice into a TFTP DATA packet and send to server
-                            send_dat(client_block_number % MAX_VALUE_2_BYTES, client_data_block)
-                            
-                            # Read next server response
-                            received_packet, received_packet_opcode = receive_tftp_packet()
+                                # Get current slice of data
+                                client_data_block = client_data[i : i + BLK_SIZE]
+                                    
+                                # Turn the slice into a TFTP DATA packet and send to server
+                                send_dat(client_block_number % MAX_VALUE_2_BYTES, client_data_block)
                                 
-                    # Check if the file's length is divisible by BLK_SIZE
-                    if len(client_data) % BLK_SIZE == 0:
-                        # Send the final empty byte to indicate end of transmission
-                        send_dat((client_block_number + 1) % MAX_VALUE_2_BYTES, b'')
-                
-                # Notify user once finished
-                print(f'File \'{client_file_name}\' has been successfully uploaded to the server.')
+                                # Read next server response
+                                received_packet, received_packet_opcode = receive_tftp_packet()
+                                    
+                        # Check if the file's length is divisible by BLK_SIZE
+                        if len(client_data) % BLK_SIZE == 0:
+                            # Send the final empty byte to indicate end of transmission
+                            send_dat((client_block_number + 1) % MAX_VALUE_2_BYTES, b'')
+                    
+                    # Notify user once finished
+                    print()
+                    print(f'File \'{client_file_name}\' has been successfully uploaded to the server.')
                 
                 # Set BLK_SIZE back to its original value
                 change_blksize(original_blksize)
@@ -299,12 +375,21 @@ def main():
                 change_server(original_address[0], original_address[1])
                 
             elif user_choice == '3':
-                prompt_blksize()
-            
-            elif user_choice == '4':
                 prompt_server()
             
+            elif user_choice == '4':
+                prompt_blksize()
+            
             elif user_choice == '5':
+                toggle_tsize_option()
+                
+                # Notify user
+                if TSIZE_OPTION:
+                    print('Transfer size option is now set to ON.')
+                else:
+                    print('Transfer size option is now set to OFF.')
+            
+            elif user_choice == '6':
                 # Prompt for user confirmation
                 user_confirm = input('Are you sure you want to exit the application? (Y/N): ')
                 if user_confirm == 'Y' or user_confirm == 'y':
@@ -352,18 +437,18 @@ def send_req(type, filename):
 
     # Append request opcode at the beginning of the packet
     req += b'\x00'
-    req += f'\\x0{type}'.encode().decode('unicode_escape').encode("raw_unicode_escape")
+    req += f'\\x0{type}'.encode().decode('unicode_escape').encode('raw_unicode_escape')
 
     # Convert the passed file name into a byte array and append it to the request packet
     req += bytearray(filename.encode('utf-8'))
 
-    # Append 0x00 byte
+    # Append NULL terminator
     req += b'\x00'
     
     # Append transfer mode to request packet
     req += MODE
 
-    # Append 0x00 byte
+    # Append NULL terminator
     req += b'\x00'
     
     # Append custom transfer block size value if the user set a custom value
@@ -371,15 +456,36 @@ def send_req(type, filename):
         # Append custom blocksize option indicator
         req += b'blksize'
         
-        # Append 0x00 byte
+        # Append NULL terminator
         req += b'\x00'
         
         # Append blocksize value
-        req += f'{BLK_SIZE}'.encode().decode('unicode_escape').encode("raw_unicode_escape")
+        req += f'{BLK_SIZE}'.encode().decode('unicode_escape').encode('raw_unicode_escape')
         
-        # Append 0x00 byte
+        # Append NULL terminator
         req += b'\x00'
 
+    # Append transfer size option if the user toggled it on
+    if TSIZE_OPTION:
+        # Append transfer size option indicator
+        req += b'tsize'
+        
+        # Append NULL terminator
+        req += b'\x00'
+        
+        # Get the size of the file with the name 'filename'
+        try:
+            # Case for WRQ
+            # Append the size of the file
+            req += f'{os.path.getsize(filename)}'.encode().decode('unicode_escape').encode('raw_unicode_escape')
+        except OSError:
+            # Case for RRQ
+            # Append 0 as the value
+            req += b'\x00'
+        
+        # Append NULL terminator
+        req += b'\x00'
+    
     # Send the request packet to the server through client socket
     CLIENT_SOCKET.sendto(bytes(req), SERVER_ADDR)
 
@@ -399,7 +505,7 @@ def send_dat(block, data):
     
     # Append data opcode at the beginning of the packet
     dat += b'\x00'
-    dat += f"\\x0{OPCODE['DAT']}".encode().decode('unicode_escape').encode("raw_unicode_escape")
+    dat += f"\\x0{OPCODE['DAT']}".encode().decode('unicode_escape').encode('raw_unicode_escape')
     
     # Append the block number
     dat += block.to_bytes(2, byteorder='big', signed=False)
@@ -425,7 +531,7 @@ def send_ack(block):
     
     # Append acknowledgement opcode at the beginning of the packet
     ack += b'\x00'
-    ack += f"\\x0{OPCODE['ACK']}".encode().decode('unicode_escape').encode("raw_unicode_escape")
+    ack += f"\\x0{OPCODE['ACK']}".encode().decode('unicode_escape').encode('raw_unicode_escape')
     
     # Append the block number
     ack += block.to_bytes(2, byteorder='big', signed=False)
@@ -448,12 +554,12 @@ def send_err(code):
     
     # Append error opcode at the beginning of the packet
     err += b'\x00'
-    err += f"\\x0{OPCODE['ERR']}".encode().decode('unicode_escape').encode("raw_unicode_escape")
+    err += f"\\x0{OPCODE['ERR']}".encode().decode('unicode_escape').encode('raw_unicode_escape')
     
     # Convert error message into a byte array and append it to the error packet
     err += bytearray(code.encode('utf-8'))
     
-    # Append 0x00 terminating byte
+    # Append NULL terminator
     err += b'\x00'
     
     # Send the error packet to the server through client socket
@@ -467,8 +573,9 @@ def receive_tftp_packet():
         None
     
     Returns:
-        bytes: The packet received from the TFTP server
-        int: The opcode of the packet received from the TFTP server
+        tuple: A tuple containing the following pair of data:
+            - bytes: The packet received from the TFTP server
+            - int: The opcode of the packet received from the TFTP server
     '''
     while True:
         # Receive some packet
@@ -487,25 +594,73 @@ def receive_tftp_packet():
             # If not, ignore
             print(f"Ignoring packet from unexpected address: {addr}")
 
-def check_oac_blksize(packet):
+def process_oac_from_rrq(packet):
     '''
-    Function to check if custom transfer block size is
-    acknowledged by the server in their OACK response
+    Function to check if custom transfer blockis acknowledged
+    by the server in their OACK response to a RRQ
     
     Args:
-        oac_packet (bytes): OACK packet from the server
+        packet (bytes): OACK packet from the server
     
     Returns:
-        bool: Boolean value whether the server accepted the options or not
+        tuple: A tuple containing the following pair of data:
+            - bool: Boolean value whether the server accepted the custom transfer block size option or not
+            - int: Integer value containing the size of the file requested to the server
     '''
     # Initialize variables
-    oack_blksize = f'blksize\\x00{BLK_SIZE}\\x00'.encode().decode('unicode_escape').encode("raw_unicode_escape")
+    negotiated_blksize = False
+    file_size = None
     
-    # Check for the presence of blocksize acknowledgement within the packet
-    if oack_blksize in packet:
-        return True
-    else:
-        return False
+    # Subset of bytes to scan within the packet
+    blksize_subset = f'blksize\\x00{BLK_SIZE}\\x00'.encode().decode('unicode_escape').encode('raw_unicode_escape')
+    
+    # Check for the presence of custom transfer block size acknowledgement within the packet
+    if blksize_subset in packet:
+        negotiated_blksize = True
+    
+    # Split the OACK packet into its options
+    options = packet[2:].split(b'\x00')
+    
+    # Get the index of the 'tsize' option
+    tsize_index = options.index(b'tsize')
+    
+    # Extract the size of the file requested to the server, which should be on the index next to 'tsize'
+    file_size = int(options[tsize_index + 1].decode('utf-8'))
+    
+    # Return the values
+    return negotiated_blksize, file_size
+
+def process_oac_from_wrq(packet, filename):
+    '''
+    Function to check if custom transfer block size and transfer size option
+    are acknowledged by the server in their OACK response to a WRQ
+    
+    Args:
+        packet (bytes): OACK packet from the server
+        filename (str): Name of the file that the client wants to download or upload - defaults to None
+    
+    Returns:
+        tuple: A tuple containing the following pair of data:
+            - bool: Boolean value whether the server accepted the custom transfer block size option or not
+            - bool: Boolean value whether the server accepted the transfer size option or not
+    '''
+    # Initialize variables
+    negotiated_blksize = False
+    negotiated_tsize = False
+    
+    # Subset of bytes to scan within the packet
+    blksize_subset = f'blksize\\x00{BLK_SIZE}\\x00'.encode().decode('unicode_escape').encode('raw_unicode_escape')
+    tsize_subset = f'tsize\\x00{os.path.getsize(filename)}\\x00'.encode().decode('unicode_escape').encode('raw_unicode_escape')
+    
+    # Check for the presence of custom transfer block size acknowledgement within the packet
+    if blksize_subset in packet:
+        negotiated_blksize = True
+    
+    # Check for the presence of transfer size option acknowledgement within the packet
+    if tsize_subset in packet:
+        negotiated_tsize = True
+    
+    return negotiated_blksize, negotiated_tsize
 
 def change_server(address, port):
     '''
@@ -545,6 +700,23 @@ def change_blksize(size):
     
     # Since BLK_SIZE is changing, MAX_DATA_LENGTH must also too
     MAX_DATA_LENGTH = BLK_SIZE + 4
+
+def toggle_tsize_option():
+    '''
+    Function to toggle the global variable TSIZE_OPTION between values True and False
+    which stores the decision whether the client will include a transfer size option in its requests
+    
+    Args:
+        None
+    
+    Returns:
+        None
+    '''
+    # Create reference to the global variable
+    global TSIZE_OPTION
+    
+    # Toggle the values between True and False
+    TSIZE_OPTION = False if TSIZE_OPTION else True
 
 def prompt_server():
     '''
