@@ -232,52 +232,61 @@ def main():
                     progress_indicator = Spinner('Downloading... ')
                 
                 # Loop to receive incoming packets from server and send corresponding ACK packets
-                while True:
-                    # Check first if the server response is an ERROR packet
-                    if received_packet_opcode == OPCODE['ERR']:
-                        # Process the packet and terminate loop
-                        print(f"ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}")
-                        break
-                    else:
-                        # Process packet into a variable, then into a file
-                        # Get first the packet's block number
-                        server_block_number = int.from_bytes(received_packet[2:4], byteorder='big')
-                        
-                        # Compare with client's current block number
-                        if server_block_number != client_block_number:
-                            # If packet is not expected, ignore
-                            print(f'Ignoring packet with unexpected block number: {server_block_number}')
-                            print(f'Client block number: {client_block_number}')
-                            continue
-                        
-                        # Send acknowledgment
-                        send_ack(client_block_number)
-                        
-                        # Write packet data payload onto a variable and append current block number
-                        server_file += received_packet[4:]
-                        client_block_number = (client_block_number + 1) % MAX_VALUE_2_BYTES
-                        
-                        # Increment progress indicator
-                        progress_indicator.next()
-                        
-                        # Check if the last packet is received
-                        if len(received_packet) < MAX_DATA_LENGTH:
-                            # Check if there has been any received data
-                            if server_file:
-                                # Write the received data onto a file
-                                with open(server_file_name, 'wb') as f:
-                                    f.write(server_file)
-                                
-                                # Notify user once finished
-                                progress_indicator.finish()
-                                print()
-                                print(f'File \'{server_file_name}\' has been successfully downloaded from the server.')
-                            
-                            # Terminate the loop
+                try:
+                    while True:
+                        # Check first if the server response is an ERROR packet
+                        if received_packet_opcode == OPCODE['ERR']:
+                            # Process the packet and terminate loop
+                            print(f"ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}")
                             break
-                    
-                    # Read next server response
-                    received_packet, received_packet_opcode = receive_tftp_packet(dat=True)
+                        else:
+                            # Process packet into a variable, then into a file
+                            # Get first the packet's block number
+                            server_block_number = int.from_bytes(received_packet[2:4], byteorder='big')
+                            
+                            # Compare with client's current block number
+                            if server_block_number != client_block_number:
+                                # If packet is not expected, ignore
+                                print(f'Ignoring packet with unexpected block number: {server_block_number}')
+                                print(f'Client block number: {client_block_number}')
+                                continue
+                            
+                            # Send acknowledgment
+                            send_ack(client_block_number)
+                            
+                            # Write packet data payload onto a variable and append current block number
+                            server_file += received_packet[4:]
+                            client_block_number = (client_block_number + 1) % MAX_VALUE_2_BYTES
+                            
+                            # Increment progress indicator
+                            progress_indicator.next()
+                            
+                            # Check if the last packet is received
+                            if len(received_packet) < MAX_DATA_LENGTH:
+                                # Check if there has been any received data
+                                if server_file:
+                                    # First check if the 'Downloads' folder inside application directory exists
+                                    if not os.path.exists('Downloads'): 
+                                        # Create 'Downloads' folder
+                                        os.makedirs('Downloads') 
+                                        
+                                    # Write the received data onto a file
+                                    with open(os.path.join('Downloads', server_file_name), 'wb') as f:
+                                        f.write(server_file)
+                                    
+                                    # Notify user once finished
+                                    progress_indicator.finish()
+                                    print()
+                                    print(f'File \'{server_file_name}\' has been successfully downloaded from the server.')
+                                
+                                # Terminate the loop
+                                break
+                        
+                        # Read next server response
+                        received_packet, received_packet_opcode = receive_tftp_packet(dat=True)
+                except ConnectionResetError:
+                    # Notify user of error
+                    print('ERROR from TFTP server: Attempt to further contact the server has failed.')
                 
                 # Set BLK_SIZE back to its original value
                 change_blksize(original_blksize)
@@ -289,6 +298,7 @@ def main():
                 # Initialize variables
                 client_file_name = None
                 client_block_number = 0
+                server_file_name = None
                 original_address = SERVER_ADDR
                 original_blksize = BLK_SIZE
                 negotiated_blksize = True
@@ -317,12 +327,18 @@ def main():
                 # Check if user entered '/'
                 if client_file_name == '/':
                     continue
-                else:
-                    print()
-                    print('Requesting file upload to server.')
+                
+                # Prompt user for the name of the file they wish to upload
+                print()
+                print('(Enter blank to use the file\'s original name.)')
+                server_file_name = input('Enter the name the file will have inside the server: ')
+                
+                # Check if user entered blank (i.e. use file's original name)
+                if not server_file_name:
+                    server_file_name = client_file_name
                 
                 # Send WRQ packet to server
-                send_req(OPCODE['WRQ'], client_file_name)
+                send_req(OPCODE['WRQ'], server_file_name)
                 
                 # Read first server response
                 received_packet, received_packet_opcode = receive_tftp_packet()
@@ -364,43 +380,47 @@ def main():
                     # Set progress indicator
                     progress_indicator = IncrementalBar('Uploading...', max=(os.path.getsize(client_file_name) // BLK_SIZE), suffix='%(percent).1f%% - %(eta)ds')
                     
-                    # Open file
-                    with open(client_file_name, 'rb') as client_file:
-                        # Read the whole file at once
-                        client_data = client_file.read()
+                    try:
+                        # Open file
+                        with open(client_file_name, 'rb') as client_file:
+                            # Read the whole file at once
+                            client_data = client_file.read()
+                            
+                            # Loop to iteratively slice and process the next BLK_SIZE amount of data in the file
+                            for i in range(0, len(client_data), BLK_SIZE):
+                                # Check first if the server response is an ERROR packet
+                                if received_packet_opcode == OPCODE['ERR']:
+                                    # Process the packet and terminate loop
+                                    print(f"ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}")
+                                    break
+                                else:
+                                    # Increment client block number
+                                    client_block_number = (client_block_number + 1) % MAX_VALUE_2_BYTES
+                                    
+                                    # Get current slice of data
+                                    client_data_block = client_data[i : i + BLK_SIZE]
+                                        
+                                    # Turn the slice into a TFTP DATA packet and send to server
+                                    send_dat(client_block_number, client_data_block)
+                                    
+                                    # Read next server response
+                                    received_packet, received_packet_opcode = receive_tftp_packet()
+                                    
+                                    # Increment progress indicator
+                                    progress_indicator.next()
+                                        
+                            # Check if the file's length is divisible by BLK_SIZE
+                            if len(client_data) % BLK_SIZE == 0:
+                                # Send the final empty byte to indicate end of transmission
+                                send_dat((client_block_number + 1) % MAX_VALUE_2_BYTES, b'')
                         
-                        # Loop to iteratively slice and process the next BLK_SIZE amount of data in the file
-                        for i in range(0, len(client_data), BLK_SIZE):
-                            # Check first if the server response is an ERROR packet
-                            if received_packet_opcode == OPCODE['ERR']:
-                                # Process the packet and terminate loop
-                                print(f"ERROR from TFTP server: {ERR_CODE[int.from_bytes(received_packet[2:4], byteorder='big')]}")
-                                break
-                            else:
-                                # Increment client block number
-                                client_block_number = (client_block_number + 1) % MAX_VALUE_2_BYTES
-                                
-                                # Get current slice of data
-                                client_data_block = client_data[i : i + BLK_SIZE]
-                                    
-                                # Turn the slice into a TFTP DATA packet and send to server
-                                send_dat(client_block_number, client_data_block)
-                                
-                                # Read next server response
-                                received_packet, received_packet_opcode = receive_tftp_packet()
-                                
-                                # Increment progress indicator
-                                progress_indicator.next()
-                                    
-                        # Check if the file's length is divisible by BLK_SIZE
-                        if len(client_data) % BLK_SIZE == 0:
-                            # Send the final empty byte to indicate end of transmission
-                            send_dat((client_block_number + 1) % MAX_VALUE_2_BYTES, b'')
-                    
-                    # Notify user once finished
-                    progress_indicator.finish()
-                    print()
-                    print(f'File \'{client_file_name}\' has been successfully uploaded to the server.')
+                            # Notify user once finished
+                            progress_indicator.finish()
+                            print()
+                            print(f'File \'{client_file_name}\' has been successfully uploaded to the server as \'{server_file_name}\'.')
+                    except ConnectionResetError:
+                        # Notify user of error
+                        print('ERROR from TFTP server: Attempt to further contact the server has failed.')
                 
                 # Set BLK_SIZE back to its original value
                 change_blksize(original_blksize)
