@@ -116,6 +116,8 @@ def main():
                 negotiated_blksize = True
                 received_tsize = None
                 progress_indicator = None
+                received_packet = None
+                received_packet_opcode = None
                 
                 # Prompt user for the name of the file they wish to download
                 # Encased in a while loop to ensure file existence
@@ -145,11 +147,11 @@ def main():
                 # Send RRQ packet to server
                 send_req(OPCODE['RRQ'], server_file_name)
                 
-                # Read first server response
-                received_packet, received_packet_opcode = receive_tftp_packet()
-                
                 # Additional negotiation if the user has set a custom transfer block size or turned transfer size option on
                 if BLK_SIZE != 512 or TSIZE_OPTION:
+                    # Read first server response
+                    received_packet, received_packet_opcode = receive_tftp_packet()
+                    
                     # Check opcode of received response
                     if received_packet_opcode == OPCODE['OAC']:
                         # Check if server accepted the options requested by the client
@@ -157,6 +159,9 @@ def main():
                     elif received_packet_opcode == OPCODE['DAT']:
                         # DAT means server did not accept all options
                         negotiated_blksize = False
+                else:
+                    # Read first server response
+                    received_packet, received_packet_opcode = receive_tftp_packet(dat=True)
                 print()
                 
                 # Check status of Client-Server negotiations regarding custom transfer block size
