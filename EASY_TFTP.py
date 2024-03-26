@@ -157,7 +157,7 @@ def main():
                     # Additional negotiation if the user has set a custom transfer block size or turned transfer size option on
                     if BLK_SIZE != 512 or TSIZE_OPTION:
                         # Read first server response
-                        received_packet, received_packet_opcode = receive_tftp_packet()
+                        received_packet, received_packet_opcode = receive_tftp_packet(dat=True)
                         
                         # Check opcode of received response
                         if received_packet_opcode == OPCODE['OAC']:
